@@ -8,13 +8,14 @@ from docx import Document
 TELEGRAM_BOT_TOKEN = '8112681572:AAHXFkLmUkwsRxcpx8GN0FCvd8gsnxFOk3I'
 
 # --- Configuration ---
-# Sets the maximum number of questions per DOCX file.
 QUESTIONS_PER_FILE = 30
+# Official MIME type for .docx files, used for filtering
+DOCX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
-# This function remains from your original code to parse a text block.
+
 def parse_text_question(block: str):
     """
-    Parses a single block of text based on a fixed line structure.
+    Parses a single block of text based on a fixed line structure. (No changes needed here)
     """
     block = block.strip()
     if not block:
@@ -54,10 +55,10 @@ def parse_text_question(block: str):
         'explanation_text': explanation_text
     }
 
-# This function to create the DOCX is unchanged and works perfectly.
+
 def create_docx(questions_data, file_path):
     """
-    Generates a .docx file with a separate, fixed-structure table for each question.
+    Generates a .docx file with a separate, fixed-structure table for each question. (No changes needed here)
     """
     doc = Document()
     
@@ -109,36 +110,50 @@ def create_docx(questions_data, file_path):
         
     doc.save(file_path)
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for the /start command."""
+    """Handler for the /start command. (Message updated)"""
     await update.message.reply_text(
-        "Hello! \U0001F44B\n"
-        "Please send me a .txt file with your questions, or forward a Telegram Quiz.\n\n"
+        "Hello! 👋\n\n"
+        "Please send me a .txt or .docx file with your questions, or forward a Telegram Quiz.\n\n"
         "I will convert them into a structured .docx file for you. "
-        f"If the file has more than {QUESTIONS_PER_FILE} questions, I'll create multiple documents."
+        f"If a file has more than {QUESTIONS_PER_FILE} questions, I'll create multiple documents."
     )
 
-# --- NEW: HANDLER FOR .TXT FILE UPLOADS ---
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles .txt file uploads, parses questions, and creates batched .docx files."""
+
+# --- NEW UNIFIED HANDLER: This function now handles both .txt and .docx file uploads ---
+async def handle_text_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles file uploads, extracts text from .txt or .docx, and creates .docx files."""
     chat_id = update.message.chat_id
-    doc = update.message.document
+    doc_file = update.message.document
 
     # 1. Download the file from Telegram
-    await update.message.reply_text(f"Processing your file: {doc.file_name} ... \u23F3")
-    temp_txt_path = f'input_{chat_id}.txt'
-    file = await doc.get_file()
-    await file.download_to_drive(temp_txt_path)
+    await update.message.reply_text(f"Processing your file: {doc_file.file_name} ... ⏳")
+    temp_file_path = f'input_{chat_id}{os.path.splitext(doc_file.file_name)[1]}'
+    file = await doc_file.get_file()
+    await file.download_to_drive(temp_file_path)
 
-    # 2. Read and parse the entire file content
+    # 2. Read the file content based on its type
+    content = ""
     try:
-        with open(temp_txt_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+        if doc_file.mime_type == 'text/plain':
+            with open(temp_file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        elif doc_file.mime_type == DOCX_MIME_TYPE:
+            doc = Document(temp_file_path)
+            # Join all paragraphs to reconstruct the full text content
+            content = "\n".join([p.text for p in doc.paragraphs])
+        else:
+            await update.message.reply_text(f"❌ Unsupported file type: {doc_file.mime_type}")
+            os.remove(temp_file_path)
+            return
+            
     except Exception as e:
-        await update.message.reply_text(f"\U0001F198 Error reading file: {e}")
-        os.remove(temp_txt_path)
+        await update.message.reply_text(f"🆘 Error reading file: {e}")
+        os.remove(temp_file_path)
         return
         
+    # 3. Parse the extracted text content
     question_blocks = re.split(r'\n\s*\n', content.strip())
     valid_questions = []
     failed_blocks = []
@@ -150,24 +165,24 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if parsed_q:
                 valid_questions.append(parsed_q)
         except ValueError as e:
-            failed_blocks.append(f"\U0001F198 ERROR IN QUESTION #{i+1}\nReason: {e}")
+            failed_blocks.append(f"❗️ ERROR IN QUESTION #{i+1}\nReason: {e}")
 
-    # 3. Report any parsing errors
+    # 4. Report any parsing errors
     if failed_blocks:
         error_summary = "\n\n".join(failed_blocks)
         await update.message.reply_text(f"Found some issues in your file:\n\n{error_summary}")
 
-    # 4. Process valid questions and create batched DOCX files
+    # 5. Process valid questions and create batched DOCX files
     if valid_questions:
         total_q = len(valid_questions)
         num_files = (total_q + QUESTIONS_PER_FILE - 1) // QUESTIONS_PER_FILE
         
         await update.message.reply_text(
-            f"\u2705 Successfully parsed {total_q} question(s). "
+            f"✅ Successfully parsed {total_q} question(s). "
             f"Generating {num_files} DOCX file(s) for you now..."
         )
         
-        # Split valid_questions into chunks of 30
+        # Split valid_questions into chunks
         for i in range(0, total_q, QUESTIONS_PER_FILE):
             chunk = valid_questions[i:i + QUESTIONS_PER_FILE]
             part_num = (i // QUESTIONS_PER_FILE) + 1
@@ -179,10 +194,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(output_doc_path) # Clean up the generated docx file
             
     elif not failed_blocks:
-        await update.message.reply_text("\u274C No valid questions found in the file.")
+        await update.message.reply_text("🤔 No valid questions found in the file.")
         
-    # 5. Clean up the original downloaded txt file
-    os.remove(temp_txt_path)
+    # 6. Clean up the original downloaded file
+    os.remove(temp_file_path)
 
 
 # The handler for quizzes remains unchanged.
@@ -195,7 +210,7 @@ async def handle_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("This looks like a regular poll, not a quiz. I can only process quizzes.")
         return
 
-    await update.message.reply_text("Processing quiz... \u23F3")
+    await update.message.reply_text("Processing quiz... ⏳")
 
     quiz_data = {
         'question_text': poll.question,
@@ -207,7 +222,7 @@ async def handle_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = f'quiz_{chat_id}.docx'
     create_docx([quiz_data], file_path)
     
-    await update.message.reply_text(f"\u2705 Successfully processed the quiz.")
+    await update.message.reply_text(f"✅ Successfully processed the quiz.")
     await update.message.reply_document(document=open(file_path, 'rb'))
     os.remove(file_path)
 
@@ -218,15 +233,16 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     
-    # --- MODIFIED: This handler now specifically listens for .txt documents ---
-    application.add_handler(MessageHandler(filters.Document.TXT, handle_document))
+    # --- MODIFIED: This single handler now listens for both .txt and .docx files ---
+    combined_filter = filters.Document.TXT | filters.Document.MimeType(DOCX_MIME_TYPE)
+    application.add_handler(MessageHandler(combined_filter, handle_text_document))
     
     # Handler for quizzes remains the same
     application.add_handler(MessageHandler(filters.POLL, handle_quiz))
     
-    # Optional: Add a message for plain text to guide users
+    # Optional: Guide users who send plain text
     async def guide_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Please send your questions as a .txt file. I no longer process plain text messages.")
+        await update.message.reply_text("Please send your questions as a .txt or .docx file. I don't process plain text messages.")
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, guide_user))
     
     print("Bot started... (Press Ctrl+C to stop)")
@@ -234,3 +250,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    
